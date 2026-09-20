@@ -1,4 +1,5 @@
 import os
+import re
 from dataclasses import dataclass
 
 
@@ -56,3 +57,25 @@ class SessionCache:
                 self.sessions[session_id] = active
             else:
                 self.sessions.pop(session_id, None)
+
+
+def count_words(text):
+    return len(re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?", text))
+
+
+def validate_chunk(text):
+    if not text.strip():
+        raise ValueError("text cannot be empty")
+    if len(text) > 2000:
+        raise ValueError("text cannot exceed 2,000 characters")
+
+
+def prepare_text(text):
+    validate_chunk(text)
+    paragraphs = re.split(r"\s*\n\s*\n\s*", text.strip())
+    normalized = [re.sub(r"\s+", " ", paragraph).strip() for paragraph in paragraphs]
+    return " ".join(
+        paragraph if paragraph.endswith((".", "!", "?", ":", ";")) else f"{paragraph}."
+        for paragraph in normalized
+        if paragraph
+    )
