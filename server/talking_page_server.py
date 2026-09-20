@@ -1,8 +1,12 @@
 import os
 import re
 import struct
+import hmac
+import json
+import time
 import wave
 from io import BytesIO
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
 
 
@@ -120,3 +124,115 @@ class NanoEngine:
             wav.setframerate(self.model.sr)
             wav.writeframes(pcm)
         return GeneratedAudio(output.getvalue(), max(1, round(len(samples) * 1000 / self.model.sr)))
+
+
+class Service:
+    def __init__(self, settings, engine):
+        self.settings = settings
+        self.engine = engine
+        self.cache = SessionCache()
+
+    def _authorize(self, token):
+        if not hmac.compare_digest(self.settings.token, token or ""):
+            raise PermissionError("invalid pairing token")
+
+    def synthesize(self, token, session_id, chunk_index, text, now=None):
+        self._authorize(token)
+        generated = self.engine.synthesize(prepare_text(text))
+        self.cache.put(session_id, chunk_index, generated.audio, generated.duration_ms, now or time.monotonic())
+        return generated
+
+    def cached(self, token, session_id, chunk_index, now=None):
+        self._authorize(token)
+        return self.cache.get(session_id, chunk_index, now or time.monotonic())
+
+    def clear(self, token, session_id):
+        self._authorize(token)
+        self.cache.clear(session_id)
+
+
+def make_handler(service):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def send_bytes(self, status, content_type, body, duration_ms=None):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            if duration_ms is not None:
+                self.send_header("X-Talking-Page-Duration-Ms", str(duration_ms))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def session_path(self):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 5 or parts[0:2] != ["v1", "sessions"] or parts[3] != "chunks":
+                return None
+            try:
+                return parts[2], int(parts[4])
+            except ValueError:
+                return None
+
+        def do_GET(self):
+            if self.path == "/v1/health":
+                self.send_bytes(200, "application/json", b'{"status":"ready"}')
+                return
+            route = self.session_path()
+            if not route:
+                self.send_error(404)
+                return
+            try:
+                cached = service.cached(self.headers.get("X-Talking-Page-Token"), *route)
+            except PermissionError:
+                self.send_error(401)
+                return
+            if cached is None:
+                self.send_error(404)
+                return
+            self.send_bytes(200, "audio/wav", cached.audio, cached.duration_ms)
+
+        def do_POST(self):
+            route = self.session_path()
+            if not route:
+                self.send_error(404)
+                return
+            try:
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                generated = service.synthesize(self.headers.get("X-Talking-Page-Token"), *route, payload["text"])
+            except PermissionError:
+                self.send_error(401)
+                return
+            except (KeyError, ValueError, json.JSONDecodeError):
+                self.send_error(422)
+                return
+            except Exception:
+                self.send_error(502)
+                return
+            self.send_bytes(200, "audio/wav", generated.audio, generated.duration_ms)
+
+        def do_DELETE(self):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 3 or parts[0:2] != ["v1", "sessions"]:
+                self.send_error(404)
+                return
+            try:
+                service.clear(self.headers.get("X-Talking-Page-Token"), parts[2])
+            except PermissionError:
+                self.send_error(401)
+                return
+            self.send_response(204)
+            self.end_headers()
+
+    return Handler
+
+
+def run():
+    settings = Settings.from_environment()
+    engine = NanoEngine()
+    engine.load()
+    ThreadingHTTPServer((settings.host, settings.port), make_handler(Service(settings, engine))).serve_forever()
+
+
+if __name__ == "__main__":
+    run()
