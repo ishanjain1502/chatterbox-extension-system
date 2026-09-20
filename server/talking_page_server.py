@@ -1,5 +1,8 @@
 import os
 import re
+import struct
+import wave
+from io import BytesIO
 from dataclasses import dataclass
 
 
@@ -79,3 +82,41 @@ def prepare_text(text):
         for paragraph in normalized
         if paragraph
     )
+
+
+@dataclass(frozen=True)
+class GeneratedAudio:
+    audio: bytes
+    duration_ms: int
+
+
+class NanoEngine:
+    def __init__(self, factory=None):
+        self.factory = factory or self._load_model
+        self.model = None
+
+    @staticmethod
+    def _load_model(device, nano):
+        from chatterbox.tts_turbo import ChatterboxTurboTTS
+
+        return ChatterboxTurboTTS.from_pretrained(device=device, nano=nano)
+
+    def load(self):
+        if self.model is None:
+            self.model = self.factory("cpu", True)
+
+    def synthesize(self, text):
+        self.load()
+        samples = self.model.generate(text)
+        if hasattr(samples, "detach"):
+            samples = samples.detach().cpu().flatten().tolist()
+        elif samples and isinstance(samples[0], (list, tuple)):
+            samples = samples[0]
+        pcm = b"".join(struct.pack("<h", max(-32768, min(32767, round(sample * 32767)))) for sample in samples)
+        output = BytesIO()
+        with wave.open(output, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(self.model.sr)
+            wav.writeframes(pcm)
+        return GeneratedAudio(output.getvalue(), max(1, round(len(samples) * 1000 / self.model.sr)))
