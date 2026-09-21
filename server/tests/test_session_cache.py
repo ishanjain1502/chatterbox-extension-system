@@ -16,6 +16,14 @@ class SessionCacheTest(unittest.TestCase):
 
         self.assertIsNone(cache.get("12-example.com", 0, now=111))
 
+    def test_session_expiry_uses_session_creation_not_chunk_creation(self):
+        cache = SessionCache(ttl_seconds=10)
+        cache.put("12-example.com", 0, b"early", 1200, now=100)
+        cache.put("12-example.com", 1, b"late", 1200, now=105)
+
+        self.assertIsNone(cache.get("12-example.com", 0, now=111))
+        self.assertIsNone(cache.get("12-example.com", 1, now=111))
+
     def test_clear_removes_all_chunks_from_one_session(self):
         cache = SessionCache(ttl_seconds=10)
         cache.put("12-example.com", 0, b"one", 100, now=100)

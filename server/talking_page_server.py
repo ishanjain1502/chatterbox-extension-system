@@ -37,6 +37,12 @@ class CachedAudio:
     created_at: float
 
 
+@dataclass
+class CachedSession:
+    created_at: float
+    chunks: dict
+
+
 class SessionCache:
     def __init__(self, ttl_seconds=10_800):
         self.ttl_seconds = ttl_seconds
@@ -44,25 +50,25 @@ class SessionCache:
 
     def put(self, session_id, chunk_index, audio, duration_ms, now):
         self.purge(now)
-        self.sessions.setdefault(session_id, {})[chunk_index] = CachedAudio(audio, duration_ms, now)
+        session = self.sessions.get(session_id)
+        if session is None:
+            session = CachedSession(created_at=now, chunks={})
+            self.sessions[session_id] = session
+        session.chunks[chunk_index] = CachedAudio(audio, duration_ms, now)
 
     def get(self, session_id, chunk_index, now):
         self.purge(now)
-        return self.sessions.get(session_id, {}).get(chunk_index)
+        session = self.sessions.get(session_id)
+        if session is None:
+            return None
+        return session.chunks.get(chunk_index)
 
     def clear(self, session_id):
         self.sessions.pop(session_id, None)
 
     def purge(self, now):
-        for session_id, chunks in list(self.sessions.items()):
-            active = {
-                index: cached
-                for index, cached in chunks.items()
-                if now - cached.created_at <= self.ttl_seconds
-            }
-            if active:
-                self.sessions[session_id] = active
-            else:
+        for session_id, session in list(self.sessions.items()):
+            if now - session.created_at > self.ttl_seconds:
                 self.sessions.pop(session_id, None)
 
 

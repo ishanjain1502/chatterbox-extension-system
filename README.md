@@ -10,7 +10,27 @@ Talking Page is a local, English-only Chrome reader. It turns selected text or a
 
 ## Install the local service
 
-From `server`, create and activate a Python virtual environment, then install `requirements.txt`.
+Use **CPython 3.11** from [python.org](https://www.python.org/downloads/release/python-3119/) or `winget install Python.Python.3.11`. Do not use the MSYS/Git Bash `python` shim; it is not the same runtime and does not ship with `pip`.
+
+From `server`, create the virtual environment and install dependencies:
+
+```powershell
+cd server
+.\setup-venv.ps1
+```
+
+On Git Bash after installing CPython 3.11:
+
+```bash
+cd server
+./setup-venv.sh
+```
+
+Activate the environment before starting the service:
+
+```powershell
+.\server\.venv\Scripts\Activate.ps1
+```
 
 ## Start the local service
 

@@ -1,1 +1,2 @@
 chatterbox-tts
+torch
