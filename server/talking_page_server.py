@@ -76,6 +76,11 @@ def count_words(text):
     return len(re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?", text))
 
 
+def validate_total_word_count(text):
+    if count_words(text) > 10_000:
+        raise ValueError("Talking Page reads up to 10,000 words at once.")
+
+
 def validate_chunk(text):
     if not text.strip():
         raise ValueError("text cannot be empty")
@@ -144,6 +149,7 @@ class Service:
 
     def synthesize(self, token, session_id, chunk_index, text, now=None):
         self._authorize(token)
+        validate_total_word_count(text)
         generated = self.engine.synthesize(prepare_text(text))
         self.cache.put(session_id, chunk_index, generated.audio, generated.duration_ms, now or time.monotonic())
         return generated

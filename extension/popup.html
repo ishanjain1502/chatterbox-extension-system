@@ -7,11 +7,84 @@
       body {
         font-family: system-ui, sans-serif;
         margin: 12px;
-        min-width: 220px;
+        min-width: 280px;
+        color: #1a1a1a;
+      }
+
+      h1 {
+        font-size: 1rem;
+        margin: 0 0 8px;
+      }
+
+      p {
+        margin: 0 0 12px;
+        line-height: 1.4;
+      }
+
+      label {
+        display: block;
+        font-size: 0.85rem;
+        margin-bottom: 8px;
+      }
+
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        margin-top: 4px;
+        padding: 8px;
+      }
+
+      button {
+        margin-right: 8px;
+        margin-top: 4px;
+        padding: 8px 12px;
+      }
+
+      #status[data-tone="ok"] {
+        color: #0f6d31;
+      }
+
+      #status[data-tone="error"] {
+        color: #b00020;
+      }
+
+      #status[data-tone="muted"] {
+        color: #555;
+      }
+
+      .controls {
+        margin-top: 8px;
       }
     </style>
   </head>
   <body>
-    <p>Talking Page is installed. Pair the local service token to begin reading.</p>
+    <h1>Talking Page</h1>
+    <p id="status">Checking local service...</p>
+
+    <section id="setup-panel">
+      <form id="pair-form">
+        <label>
+          Local service token
+          <input id="token" type="password" autocomplete="off" placeholder="At least 32 characters" minlength="32" required />
+        </label>
+        <button type="submit">Pair local service</button>
+      </form>
+    </section>
+
+    <section id="paired-panel" hidden>
+      <div class="controls">
+        <button id="read-selection" type="button">Read selection</button>
+        <button id="read-page" type="button">Read page</button>
+      </div>
+      <div class="controls">
+        <button id="play" type="button">Play</button>
+        <button id="pause" type="button">Pause</button>
+        <button id="stop" type="button">Stop</button>
+      </div>
+      <button id="reconnect" type="button">Reconnect</button>
+      <button id="forget" type="button">Forget token</button>
+    </section>
+
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

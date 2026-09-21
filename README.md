@@ -8,37 +8,72 @@ Talking Page is a local, English-only Chrome reader. It turns selected text or a
 - Python 3.11
 - Internet access for the one-time Chatterbox model download
 
-## Install the local service
+## Quick start (extension + server side by side)
 
-Use **CPython 3.11** from [python.org](https://www.python.org/downloads/release/python-3119/) or `winget install Python.Python.3.11`. Do not use the MSYS/Git Bash `python` shim; it is not the same runtime and does not ship with `pip`.
+### One-time setup
 
-From `server`, create the virtual environment and install dependencies:
+Use **CPython 3.11** from [python.org](https://www.python.org/downloads/release/python-3119/) or `winget install Python.Python.3.11`. Do not use the MSYS/Git Bash `python` shim.
+
+From the project root in PowerShell:
 
 ```powershell
+cd E:\Projects\talking-page
+
+# Create the venv (if you have not already)
 cd server
 .\setup-venv.ps1
+cd ..
+
+# Or, if your venv is already at the project root:
+.\.venv\Scripts\Activate.ps1
+pip install -r server\requirements.txt
 ```
 
-On Git Bash after installing CPython 3.11:
-
-```bash
-cd server
-./setup-venv.sh
-```
-
-Activate the environment before starting the service:
+Pick one token and reuse it for both the server and the extension. It must be at least 32 characters:
 
 ```powershell
-.\server\.venv\Scripts\Activate.ps1
+$env:TALKING_PAGE_TOKEN = "talking-page-local-dev-token-32chars-min"
 ```
 
-## Start the local service
+### Terminal 1 — start the server
 
-Set a private token of at least 32 characters in `TALKING_PAGE_TOKEN`, then start the server from a terminal. The MVP keeps the service separate from Chrome; an automatic launcher is deferred.
+Keep this terminal open while you use the extension:
 
-## Load the extension
+```powershell
+cd E:\Projects\talking-page
+.\.venv\Scripts\Activate.ps1
+$env:TALKING_PAGE_TOKEN = "talking-page-local-dev-token-32chars-min"
+python server\talking_page_server.py
+```
 
-Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select the `extension` folder.
+The first run downloads the Chatterbox-Nano model and can take several minutes. Wait until the process stays running without errors.
+
+### Terminal 2 — verify the server (optional)
+
+```powershell
+curl http://127.0.0.1:8765/v1/health
+```
+
+Expected response: `{"status":"ready"}`
+
+### Chrome — load the extension
+
+1. Open `chrome://extensions`
+2. Turn on **Developer mode** (top right)
+3. Click **Load unpacked**
+4. Select `E:\Projects\talking-page\extension`
+5. Pin **Talking Page** from the extensions menu if you want quick access
+
+Click the extension icon to open the popup. The pairing UI is still minimal in this MVP build; the server must already be running on `http://127.0.0.1:8765`.
+
+### Day-to-day use
+
+1. Start the server in a terminal (Terminal 1 above).
+2. Use Chrome with the extension already loaded — you do not need to reload the extension each time unless you change extension files.
+
+## Install the local service (details)
+
+From `server`, `.\setup-venv.ps1` creates `server\.venv` with Python 3.11 and installs `requirements.txt`. If you prefer a root-level venv instead, activate it and run `pip install -r server\requirements.txt`.
 
 ## Pair the extension
 
@@ -56,10 +91,13 @@ Open the extension popup and paste the same local token used to start the servic
 
 ## Manual validation
 
-1. Start the service and confirm its health endpoint returns `ready`.
-2. Pair the extension and read a selected paragraph.
-3. Read an article page, then close the popup while audio continues.
-4. Pause, resume, and stop with browser media controls.
-5. Start a read in another tab and confirm the old one stops.
-6. Refresh the source tab and confirm its session ends.
-7. Confirm text over 10,000 words is rejected.
+1. Start the service and confirm `http://127.0.0.1:8765/v1/health` returns `{"status":"ready"}`.
+2. Pair the extension with the same `TALKING_PAGE_TOKEN` used by the service.
+3. Select a paragraph and start a read; confirm playback begins before later chunks finish generating.
+4. Open an article page, choose **Read page**, then close the popup while audio continues.
+5. Pause, resume, and stop from the popup buttons and from browser media controls.
+6. Start a read in another tab and confirm the previous tab's session stops.
+7. Refresh the source tab while audio is playing and confirm the session ends.
+8. Paste or select more than 10,000 English words and confirm the request is rejected before synthesis.
+9. Stop the local service and confirm the popup reports the service as unavailable.
+10. To exercise skipped-chunk behavior, temporarily break synthesis for one chunk in a multi-chunk read and confirm later chunks still play.

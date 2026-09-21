@@ -26,5 +26,7 @@ export function scheduleSessionExpiry(session, onExpire, now = Date.now()) {
     onExpire();
     return null;
   }
-  return setTimeout(onExpire, remainingMs);
+  const timer = setTimeout(onExpire, remainingMs);
+  timer.unref?.();
+  return timer;
 }
