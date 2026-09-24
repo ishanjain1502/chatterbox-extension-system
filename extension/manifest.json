@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Talking Page",
+  "version": "0.1.0",
+  "description": "Read selected text or articles aloud with local Chatterbox-Nano speech.",
+  "permissions": ["activeTab", "contextMenus", "storage", "offscreen", "scripting"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Talking Page"
+  },
+  "minimum_chrome_version": "109"
+}

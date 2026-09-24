@@ -1,0 +1,3 @@
+# PyPI 0.1.7 lacks nano=True; install from source until a Nano-capable release ships.
+chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git
+torch
