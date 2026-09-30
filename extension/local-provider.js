@@ -1,3 +1,5 @@
+export const EXTENSION_VOICE_SESSION_ID = "extension-default";
+
 export class LocalProvider {
   constructor({ endpoint, token }, fetchFn) {
     this.endpoint = endpoint.replace(/\/$/, "");
@@ -67,5 +69,44 @@ export class LocalProvider {
       method: "DELETE",
       headers: { "X-Talking-Page-Token": this.token },
     });
+  }
+
+  async getVoiceStatus(sessionId) {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    const response = await this.fetch(`${this.endpoint}/v1/voice${query}`, {
+      headers: { "X-Talking-Page-Token": this.token },
+    });
+    if (response.status === 401) throw new Error("unauthorized");
+    if (!response.ok) throw new Error(`voice status failed (${response.status})`);
+    return response.json();
+  }
+
+  async uploadSessionVoice(sessionId, wavBytes) {
+    const response = await this.fetch(
+      `${this.endpoint}/v1/sessions/${encodeURIComponent(sessionId)}/voice`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "audio/wav",
+          "X-Talking-Page-Token": this.token,
+        },
+        body: wavBytes,
+      },
+    );
+    if (response.status === 401) throw new Error("unauthorized");
+    if (response.status === 422) throw new Error("invalid voice sample");
+    if (!response.ok) throw new Error(`voice upload failed (${response.status})`);
+  }
+
+  async clearSessionVoice(sessionId) {
+    const response = await this.fetch(
+      `${this.endpoint}/v1/sessions/${encodeURIComponent(sessionId)}/voice`,
+      {
+        method: "DELETE",
+        headers: { "X-Talking-Page-Token": this.token },
+      },
+    );
+    if (response.status === 401) throw new Error("unauthorized");
+    if (!response.ok) throw new Error(`voice clear failed (${response.status})`);
   }
 }

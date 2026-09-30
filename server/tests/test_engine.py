@@ -5,6 +5,7 @@ from server.talking_page_server import NanoEngine
 
 class FakeModel:
     sr = 24_000
+    conds = object()
 
     def generate(self, text):
         return [[0.0, 0.25, -0.25]]
@@ -28,7 +29,7 @@ class EngineTest(unittest.TestCase):
         engine = NanoEngine(lambda device, nano: FakeModel())
         engine.load()
 
-        generated = engine.synthesize("A short sentence.")
+        generated = engine.synthesize("A short sentence.", "builtin", ("builtin",))
 
         self.assertTrue(generated.audio.startswith(b"RIFF"))
         self.assertGreater(generated.duration_ms, 0)

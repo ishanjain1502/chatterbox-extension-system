@@ -33,6 +33,9 @@ Pick one token and reuse it for both the server and the extension. It must be at
 
 ```powershell
 $env:TALKING_PAGE_TOKEN = "talking-page-local-dev-token-32chars-min"
+
+# Optional: use a custom voice WAV on the server (over 5 seconds, clean English speech)
+# $env:TALKING_PAGE_VOICE_SAMPLE = "E:\path\to\your-voice.wav"
 ```
 
 ### Terminal 1 — start the server
@@ -79,15 +82,24 @@ From `server`, `.\setup-venv.ps1` creates `server\.venv` with Python 3.11 and in
 
 Open the extension popup and paste the same local token used to start the service. The extension talks only to `http://127.0.0.1:8765`.
 
+## Custom voice (optional)
+
+You can use a custom English voice in two ways (extension upload wins over the env sample, then built-in Nano):
+
+1. **Server env sample** — set `TALKING_PAGE_VOICE_SAMPLE` to a local `.wav` file (longer than 5 seconds) before starting the server. If the path is set but missing or too short, the server refuses to start.
+2. **Extension upload** — in the popup, choose a WAV file. It is sent to the local service in memory only (not saved to disk). Use **Use server default voice** to remove the upload and fall back to the env sample or built-in voice.
+
+Only use voice samples you have the right to clone.
+
 ## Known MVP limits
 
 - English only
-- Built-in Chatterbox-Nano voice only
+- One custom voice at a time (builtin, env, or extension upload)
 - One fixed narration speed
 - One active browser-wide reading session
 - No permanent reading history or audio storage
 - Local service is started manually in a terminal
-- No custom voice or hosted provider yet
+- No hosted provider yet
 
 ## Manual validation
 

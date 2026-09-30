@@ -2,3 +2,5 @@ __pycache__/
 .superpowers/
 server/.venv/
 .venv/
+voice-samples/
+*.voice.wav

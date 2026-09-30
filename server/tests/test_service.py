@@ -4,13 +4,13 @@ from server.talking_page_server import GeneratedAudio, Service, Settings
 
 
 class FakeEngine:
-    def synthesize(self, text):
+    def synthesize(self, text, fingerprint, source):
         return GeneratedAudio(b"wav", 1200)
 
 
 class ServiceTest(unittest.TestCase):
     def setUp(self):
-        self.service = Service(Settings("127.0.0.1", 8765, "a" * 32), FakeEngine())
+        self.service = Service(Settings("127.0.0.1", 8765, "a" * 32, None), FakeEngine())
 
     def test_rejects_synthesis_without_the_pairing_token(self):
         with self.assertRaises(PermissionError):

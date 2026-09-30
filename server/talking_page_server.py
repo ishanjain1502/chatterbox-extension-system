@@ -1,13 +1,21 @@
+import hashlib
 import os
 import re
 import struct
 import hmac
 import json
+import tempfile
+import threading
 import time
 import wave
 from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
+from pathlib import Path
+
+EXTENSION_VOICE_SESSION_ID = "extension-default"
+MAX_VOICE_UPLOAD_BYTES = 10 * 1024 * 1024
+MIN_VOICE_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -15,19 +23,26 @@ class Settings:
     host: str
     port: int
     token: str
+    voice_sample_path: str | None
 
     @classmethod
     def from_environment(cls):
         token = os.environ.get("TALKING_PAGE_TOKEN", "")
         host = os.environ.get("TALKING_PAGE_HOST", "127.0.0.1")
         port = int(os.environ.get("TALKING_PAGE_PORT", "8765"))
+        voice_raw = os.environ.get("TALKING_PAGE_VOICE_SAMPLE", "").strip()
         if len(token) < 32:
             raise ValueError("TALKING_PAGE_TOKEN must contain at least 32 characters")
         if host not in {"127.0.0.1", "localhost"}:
             raise ValueError("TALKING_PAGE_HOST must be loopback-only")
         if not 1024 <= port <= 65535:
             raise ValueError("TALKING_PAGE_PORT must be between 1024 and 65535")
-        return cls("127.0.0.1", port, token)
+        voice_sample_path = None
+        if voice_raw:
+            voice_sample_path = str(Path(voice_raw).expanduser().resolve())
+            if not Path(voice_sample_path).is_file():
+                raise ValueError(f"TALKING_PAGE_VOICE_SAMPLE not found: {voice_sample_path}")
+        return cls("127.0.0.1", port, token, voice_sample_path)
 
 
 @dataclass(frozen=True)
@@ -35,6 +50,7 @@ class CachedAudio:
     audio: bytes
     duration_ms: int
     created_at: float
+    voice_fingerprint: str
 
 
 @dataclass
@@ -48,20 +64,23 @@ class SessionCache:
         self.ttl_seconds = ttl_seconds
         self.sessions = {}
 
-    def put(self, session_id, chunk_index, audio, duration_ms, now):
+    def put(self, session_id, chunk_index, voice_fingerprint, audio, duration_ms, now):
         self.purge(now)
         session = self.sessions.get(session_id)
         if session is None:
             session = CachedSession(created_at=now, chunks={})
             self.sessions[session_id] = session
-        session.chunks[chunk_index] = CachedAudio(audio, duration_ms, now)
+        session.chunks[chunk_index] = CachedAudio(audio, duration_ms, now, voice_fingerprint)
 
-    def get(self, session_id, chunk_index, now):
+    def get(self, session_id, chunk_index, voice_fingerprint, now):
         self.purge(now)
         session = self.sessions.get(session_id)
         if session is None:
             return None
-        return session.chunks.get(chunk_index)
+        cached = session.chunks.get(chunk_index)
+        if cached is None or cached.voice_fingerprint != voice_fingerprint:
+            return None
+        return cached
 
     def clear(self, session_id):
         self.sessions.pop(session_id, None)
@@ -99,6 +118,84 @@ def prepare_text(text):
     )
 
 
+def wav_duration_seconds(wav_bytes):
+    with wave.open(BytesIO(wav_bytes), "rb") as wav_file:
+        return wav_file.getnframes() / float(wav_file.getframerate())
+
+
+def validate_voice_wav(wav_bytes):
+    if len(wav_bytes) > MAX_VOICE_UPLOAD_BYTES:
+        raise ValueError("voice sample exceeds 10 MB limit")
+    if not wav_bytes.startswith(b"RIFF"):
+        raise ValueError("voice sample must be WAV audio")
+    if wav_duration_seconds(wav_bytes) <= MIN_VOICE_SECONDS:
+        raise ValueError(f"voice sample must be longer than {MIN_VOICE_SECONDS} seconds")
+
+
+def validate_voice_file(path):
+    wav_bytes = Path(path).read_bytes()
+    validate_voice_wav(wav_bytes)
+
+
+class VoiceStore:
+    def __init__(self, env_voice_path=None):
+        self.env_voice_path = env_voice_path
+        self.env_fingerprint = (
+            f"env:{hashlib.sha256(env_voice_path.encode()).hexdigest()[:16]}" if env_voice_path else None
+        )
+        self.session_samples = {}
+        self._temp_paths = {}
+
+    def set_session_voice(self, session_id, wav_bytes):
+        validate_voice_wav(wav_bytes)
+        fingerprint = f"upload:{hashlib.sha256(wav_bytes).hexdigest()[:16]}"
+        self._remove_temp(session_id)
+        self.session_samples[session_id] = (fingerprint, wav_bytes)
+        return fingerprint
+
+    def clear_session_voice(self, session_id):
+        self.session_samples.pop(session_id, None)
+        self._remove_temp(session_id)
+
+    def _remove_temp(self, session_id):
+        path = self._temp_paths.pop(session_id, None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def temp_path_for(self, session_id, wav_bytes):
+        existing = self._temp_paths.get(session_id)
+        if existing:
+            return existing
+        handle = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        handle.write(wav_bytes)
+        handle.close()
+        self._temp_paths[session_id] = handle.name
+        return handle.name
+
+    def resolve(self, session_id):
+        if session_id in self.session_samples:
+            fingerprint, wav_bytes = self.session_samples[session_id]
+            return fingerprint, ("bytes", wav_bytes, session_id)
+        if EXTENSION_VOICE_SESSION_ID in self.session_samples:
+            fingerprint, wav_bytes = self.session_samples[EXTENSION_VOICE_SESSION_ID]
+            return fingerprint, ("bytes", wav_bytes, EXTENSION_VOICE_SESSION_ID)
+        if self.env_fingerprint:
+            return self.env_fingerprint, ("path", self.env_voice_path)
+        return "builtin", ("builtin",)
+
+    def status(self, session_id=None):
+        default_mode = "env" if self.env_voice_path else "builtin"
+        return {
+            "default_mode": default_mode,
+            "env_configured": self.env_voice_path is not None,
+            "extension_voice": EXTENSION_VOICE_SESSION_ID in self.session_samples,
+            "session_voice": session_id in self.session_samples if session_id else False,
+        }
+
+
 @dataclass(frozen=True)
 class GeneratedAudio:
     audio: bytes
@@ -106,9 +203,13 @@ class GeneratedAudio:
 
 
 class NanoEngine:
-    def __init__(self, factory=None):
+    def __init__(self, factory=None, voice_store=None):
         self.factory = factory or self._load_model
+        self.voice_store = voice_store
         self.model = None
+        self._builtin_conds = None
+        self._active_fingerprint = None
+        self._lock = threading.Lock()
 
     @staticmethod
     def _load_model(device, nano):
@@ -119,28 +220,57 @@ class NanoEngine:
     def load(self):
         if self.model is None:
             self.model = self.factory("cpu", True)
+            self._builtin_conds = self.model.conds
 
-    def synthesize(self, text):
+    def warm_env_voice(self):
+        if not self.voice_store or not self.voice_store.env_voice_path:
+            return
+        fingerprint, source = self.voice_store.resolve("__startup__")
+        self._apply_voice(fingerprint, source)
+
+    def _apply_voice(self, fingerprint, source):
+        if self._active_fingerprint == fingerprint:
+            return
         self.load()
-        samples = self.model.generate(text)
-        if hasattr(samples, "detach"):
-            samples = samples.detach().cpu().flatten().tolist()
-        elif samples and isinstance(samples[0], (list, tuple)):
-            samples = samples[0]
-        pcm = b"".join(struct.pack("<h", max(-32768, min(32767, round(sample * 32767)))) for sample in samples)
-        output = BytesIO()
-        with wave.open(output, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(self.model.sr)
-            wav.writeframes(pcm)
-        return GeneratedAudio(output.getvalue(), max(1, round(len(samples) * 1000 / self.model.sr)))
+        kind = source[0]
+        if kind == "builtin":
+            if self._builtin_conds is None:
+                raise RuntimeError("builtin voice is unavailable")
+            self.model.conds = self._builtin_conds
+        elif kind == "path":
+            self.model.prepare_conditionals(source[1])
+        elif kind == "bytes":
+            wav_bytes, session_key = source[1], source[2]
+            prompt_path = self.voice_store.temp_path_for(session_key, wav_bytes)
+            self.model.prepare_conditionals(prompt_path)
+        else:
+            raise RuntimeError(f"unknown voice source: {kind}")
+        self._active_fingerprint = fingerprint
+
+    def synthesize(self, text, fingerprint, source):
+        self.load()
+        with self._lock:
+            self._apply_voice(fingerprint, source)
+            samples = self.model.generate(text)
+            if hasattr(samples, "detach"):
+                samples = samples.detach().cpu().flatten().tolist()
+            elif samples and isinstance(samples[0], (list, tuple)):
+                samples = samples[0]
+            pcm = b"".join(struct.pack("<h", max(-32768, min(32767, round(sample * 32767)))) for sample in samples)
+            output = BytesIO()
+            with wave.open(output, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(self.model.sr)
+                wav.writeframes(pcm)
+            return GeneratedAudio(output.getvalue(), max(1, round(len(samples) * 1000 / self.model.sr)))
 
 
 class Service:
-    def __init__(self, settings, engine):
+    def __init__(self, settings, engine, voice_store=None):
         self.settings = settings
         self.engine = engine
+        self.voice_store = voice_store or VoiceStore(settings.voice_sample_path)
         self.cache = SessionCache()
 
     def _authorize(self, token):
@@ -150,17 +280,41 @@ class Service:
     def synthesize(self, token, session_id, chunk_index, text, now=None):
         self._authorize(token)
         validate_total_word_count(text)
-        generated = self.engine.synthesize(prepare_text(text))
-        self.cache.put(session_id, chunk_index, generated.audio, generated.duration_ms, now or time.monotonic())
+        fingerprint, source = self.voice_store.resolve(session_id)
+        generated = self.engine.synthesize(prepare_text(text), fingerprint, source)
+        self.cache.put(
+            session_id,
+            chunk_index,
+            fingerprint,
+            generated.audio,
+            generated.duration_ms,
+            now or time.monotonic(),
+        )
         return generated
 
     def cached(self, token, session_id, chunk_index, now=None):
         self._authorize(token)
-        return self.cache.get(session_id, chunk_index, now or time.monotonic())
+        fingerprint, _ = self.voice_store.resolve(session_id)
+        return self.cache.get(session_id, chunk_index, fingerprint, now or time.monotonic())
 
     def clear(self, token, session_id):
         self._authorize(token)
         self.cache.clear(session_id)
+        self.voice_store.clear_session_voice(session_id)
+
+    def set_session_voice(self, token, session_id, wav_bytes):
+        self._authorize(token)
+        self.voice_store.set_session_voice(session_id, wav_bytes)
+        self.cache.clear(session_id)
+
+    def clear_session_voice(self, token, session_id):
+        self._authorize(token)
+        self.voice_store.clear_session_voice(session_id)
+        self.cache.clear(session_id)
+
+    def voice_status(self, token, session_id=None):
+        self._authorize(token)
+        return self.voice_store.status(session_id)
 
 
 def make_handler(service):
@@ -186,9 +340,29 @@ def make_handler(service):
             except ValueError:
                 return None
 
+        def session_voice_path(self):
+            parts = self.path.strip("/").split("/")
+            if len(parts) != 4 or parts[0:2] != ["v1", "sessions"] or parts[3] != "voice":
+                return None
+            return parts[2]
+
         def do_GET(self):
             if self.path == "/v1/health":
                 self.send_bytes(200, "application/json", b'{"status":"ready"}')
+                return
+            if self.path.startswith("/v1/voice"):
+                session_id = None
+                if "?" in self.path:
+                    query = self.path.split("?", 1)[1]
+                    for part in query.split("&"):
+                        if part.startswith("session_id="):
+                            session_id = part.split("=", 1)[1]
+                try:
+                    payload = service.voice_status(self.headers.get("X-Talking-Page-Token"), session_id)
+                except PermissionError:
+                    self.send_error(401)
+                    return
+                self.send_bytes(200, "application/json", json.dumps(payload).encode())
                 return
             route = self.session_path()
             if not route:
@@ -223,7 +397,35 @@ def make_handler(service):
                 return
             self.send_bytes(200, "audio/wav", generated.audio, generated.duration_ms)
 
+        def do_PUT(self):
+            session_id = self.session_voice_path()
+            if not session_id:
+                self.send_error(404)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                wav_bytes = self.rfile.read(length)
+                service.set_session_voice(self.headers.get("X-Talking-Page-Token"), session_id, wav_bytes)
+            except PermissionError:
+                self.send_error(401)
+                return
+            except ValueError:
+                self.send_error(422)
+                return
+            self.send_response(204)
+            self.end_headers()
+
         def do_DELETE(self):
+            session_id = self.session_voice_path()
+            if session_id:
+                try:
+                    service.clear_session_voice(self.headers.get("X-Talking-Page-Token"), session_id)
+                except PermissionError:
+                    self.send_error(401)
+                    return
+                self.send_response(204)
+                self.end_headers()
+                return
             parts = self.path.strip("/").split("/")
             if len(parts) != 3 or parts[0:2] != ["v1", "sessions"]:
                 self.send_error(404)
@@ -241,9 +443,14 @@ def make_handler(service):
 
 def run():
     settings = Settings.from_environment()
-    engine = NanoEngine()
+    voice_store = VoiceStore(settings.voice_sample_path)
+    if settings.voice_sample_path:
+        validate_voice_file(settings.voice_sample_path)
+    engine = NanoEngine(voice_store=voice_store)
     engine.load()
-    ThreadingHTTPServer((settings.host, settings.port), make_handler(Service(settings, engine))).serve_forever()
+    engine.warm_env_voice()
+    service = Service(settings, engine, voice_store)
+    ThreadingHTTPServer((settings.host, settings.port), make_handler(service)).serve_forever()
 
 
 if __name__ == "__main__":
