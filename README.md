@@ -2,6 +2,8 @@
 
 Talking Page is a local, English-only Chrome reader. It turns selected text or an extracted article into speech using Chatterbox-Nano on this computer.
 
+The local server can **clone a voice** from a short WAV sample (optional) and apply **voice modulation** before synthesis: a small in-process model inserts Chatterbox paralinguistic tags such as `[sigh]` and `[chuckle]` so narration sounds less flat. Modulation is server-side only—the extension keeps sending plain text.
+
 ## Prerequisites
 
 - Windows with current Google Chrome
@@ -36,10 +38,16 @@ copy .env.example .env
 # Edit .env if you want your own token
 ```
 
-Optional keys in `.env`:
+Optional keys in `.env` (see `.env.example` for the full list):
 
 ```dotenv
+# Custom voice on the server (local path; validated at startup)
 # TALKING_PAGE_VOICE_SAMPLE=E:\path\to\your-voice.wav
+
+# Voice modulation (paralinguistic tagger). On by default when weights exist.
+# TALKING_PAGE_TAGGER_ENABLED=1
+# TALKING_PAGE_TAG_CONFIDENCE_THRESHOLD=0.65
+# TALKING_PAGE_TAGGER_MODEL_PATH=server/models/paralinguistic_tagger.pt
 ```
 
 ### Terminal 1 — start the server
@@ -49,8 +57,10 @@ Keep this terminal open while you use the extension. The server reads `.env` aut
 ```powershell
 cd E:\Projects\talking-page
 .\.venv\Scripts\Activate.ps1
-python server\talking_page_server.py
+python -m server.talking_page_server
 ```
+
+You can also run `python server\talking_page_server.py` from the project root; both load `.env` from the repo root.
 
 The first run downloads the Chatterbox-Nano model and can take several minutes. Wait until the process stays running without errors.
 
@@ -145,37 +155,54 @@ Open the extension popup and paste the `TALKING_PAGE_TOKEN` value from your `.en
 
 ## Custom voice (optional)
 
-You can use a custom English voice in two ways (extension upload wins over the env sample, then built-in Nano):
+You can use a custom English voice in two ways. Priority for new reads: **extension upload → env sample → built-in Nano**.
 
-1. **Server env sample** — set `TALKING_PAGE_VOICE_SAMPLE` in `.env` to a local `.wav` file (longer than 5 seconds) before starting the server. If the path is set but missing or too short, the server refuses to start.
-2. **Extension upload** — in the popup, choose a WAV file. It is sent to the local service in memory only (not saved to disk). Use **Use server default voice** to remove the upload and fall back to the env sample or built-in voice.
+1. **Server env sample** — set `TALKING_PAGE_VOICE_SAMPLE` in `.env` to a local `.wav` file (longer than 5 seconds, clean English speech) before starting the server. If the path is set but missing or too short, the server refuses to start.
+2. **Extension upload** — in the popup, choose a WAV file (same length and quality rules). It is sent to the local service in memory only (not saved to disk). Use **Use server default voice** to clear the upload. After pairing, the popup status line indicates whether the extension voice, env voice, or built-in voice is active.
 
 Only use voice samples you have the right to clone.
 
-## Paralinguistic tagger (optional model)
+In Docker, mount the WAV and set `TALKING_PAGE_VOICE_SAMPLE` to the path inside the container (see [Custom voice in Docker](#custom-voice-in-docker)).
 
-The server can insert Chatterbox inline tags (`[chuckle]`, `[sigh]`, and similar) into each chunk before synthesis. A small gap-classifier model runs in-process when a weights file is present.
+## Voice modulation (paralinguistic tagger)
 
-**Training data:** JSONL with one object per line:
+After text is normalized for TTS, the server may insert Chatterbox inline tags into each chunk. Chatterbox-Nano then renders those tags as audible events (sighs, chuckles, and similar). A lightweight gap-classifier runs in the same Python process as synthesis—not a separate service.
+
+**Default behavior:** `TALKING_PAGE_TAGGER_ENABLED` defaults to on. Weights ship at `server/models/paralinguistic_tagger.pt`. If the file is missing, the server logs once and passes plain text through. Set `TALKING_PAGE_TAGGER_ENABLED=0` for fully flat narration.
+
+**Allowed tags** (fixed vocabulary; the model never invents new ones):
+
+`[clear throat]`, `[sigh]`, `[shush]`, `[cough]`, `[groan]`, `[sniff]`, `[gasp]`, `[chuckle]`, `[laugh]`
+
+**Tune in `.env`:**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TALKING_PAGE_TAG_CONFIDENCE_THRESHOLD` | `0.65` | Insert a tag at a word gap only when the model’s confidence is at least this value (0–1). Lower = more tags. |
+| `TALKING_PAGE_TAGGER_MODEL_PATH` | `server/models/paralinguistic_tagger.pt` | Path to trained weights. |
+| `TALKING_PAGE_TAGGER_ENABLED` | `1` | Set to `0` to skip the tagger entirely. |
+
+**Retrain with your own data** (optional): JSONL with one object per line:
 
 ```json
 {"plain": "Hello world", "tagged": "Hello [sigh] world"}
 ```
 
-Put your dataset at `server/data/paralinguistic_pairs.jsonl` (gitignored). A tiny fixture lives at `server/data/paralinguistic_pairs.fixture.jsonl` for smoke tests.
+Put your dataset at `server/data/paralinguistic_pairs.jsonl` (gitignored). A small fixture lives at `server/data/paralinguistic_pairs.fixture.jsonl` for smoke tests.
 
-**Train** (from the project root with the venv active):
+From the project root with the venv active:
 
 ```powershell
 python -m server.paralinguistic.train --data server/data/paralinguistic_pairs.jsonl --out server/models/paralinguistic_tagger.pt
 ```
 
-**Tune in `.env`:** `TALKING_PAGE_TAG_CONFIDENCE_THRESHOLD` (default `0.65`) controls how often tags are inserted. Set `TALKING_PAGE_TAGGER_ENABLED=0` to disable. If the model file is missing, the server logs once and sends plain text to Chatterbox.
+Restart the server after replacing the weights file.
 
 ## Known MVP limits
 
 - English only
 - One custom voice at a time (builtin, env, or extension upload)
+- Voice modulation quality depends on the tagger weights and confidence threshold; retrain for your style if the default feels too busy or too flat
 - One fixed narration speed
 - One active browser-wide reading session
 - No permanent reading history or audio storage
@@ -186,7 +213,7 @@ python -m server.paralinguistic.train --data server/data/paralinguistic_pairs.js
 
 1. Start the service and confirm `http://127.0.0.1:8765/v1/health` returns `{"status":"ready"}`.
 2. Pair the extension with the same token as in your `.env` file (`TALKING_PAGE_TOKEN`).
-3. Select a paragraph and start a read; confirm playback begins before later chunks finish generating.
+3. Select a paragraph and start a read; confirm playback begins before later chunks finish generating. With the default tagger enabled, longer passages may include occasional paralinguistic events (or set `TALKING_PAGE_TAGGER_ENABLED=0` to compare).
 4. Open an article page, choose **Read page**, then close the popup while audio continues.
 5. Pause, resume, and stop from the popup buttons and from browser media controls.
 6. Start a read in another tab and confirm the previous tab's session stops.
