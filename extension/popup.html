@@ -55,6 +55,17 @@
       .controls {
         margin-top: 8px;
       }
+
+      .voice-note {
+        font-size: 0.8rem;
+        color: #555;
+      }
+
+      .voice-upload {
+        display: block;
+        font-size: 0.85rem;
+        margin-top: 8px;
+      }
     </style>
   </head>
   <body>
@@ -69,6 +80,12 @@
         </label>
         <button type="submit">Pair local service</button>
       </form>
+      <p class="voice-note">Optional: upload a WAV voice sample (over 5 seconds, clean English speech). Only use voices you have rights to clone.</p>
+      <label class="voice-upload">
+        Custom voice sample (WAV)
+        <input id="voice-file" type="file" accept="audio/wav,.wav" />
+      </label>
+      <button id="clear-voice" type="button">Use server default voice</button>
     </section>
 
     <section id="paired-panel" hidden>
@@ -81,6 +98,12 @@
         <button id="pause" type="button">Pause</button>
         <button id="stop" type="button">Stop</button>
       </div>
+      <p class="voice-note">Custom voice: WAV over 5 seconds. Only use voices you have rights to clone.</p>
+      <label class="voice-upload">
+        Upload voice sample
+        <input id="voice-file-paired" type="file" accept="audio/wav,.wav" />
+      </label>
+      <button id="clear-voice-paired" type="button">Use server default voice</button>
       <button id="reconnect" type="button">Reconnect</button>
       <button id="forget" type="button">Forget token</button>
     </section>

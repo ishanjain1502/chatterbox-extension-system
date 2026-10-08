@@ -1,4 +1,8 @@
+.env
 __pycache__/
 .superpowers/
 server/.venv/
 .venv/
+voice-samples/
+*.voice.wav
+server/data/paralinguistic_pairs.jsonl

@@ -1,3 +1,4 @@
+import { EXTENSION_VOICE_SESSION_ID, LocalProvider } from "./local-provider.js";
 import { PairingStore } from "./pairing-store.js";
 
 const store = new PairingStore(chrome.storage.local);
@@ -28,6 +29,50 @@ function showSetup(show) {
   pairedPanel.hidden = show;
 }
 
+async function getProvider() {
+  const pairing = await store.get();
+  if (!pairing) return null;
+  return new LocalProvider(pairing);
+}
+
+async function uploadVoiceFile(file) {
+  if (!file) return;
+  const provider = await getProvider();
+  if (!provider) {
+    setStatus("Pair the local service before uploading a voice sample.", "error");
+    return;
+  }
+  const bytes = await file.arrayBuffer();
+  try {
+    await provider.uploadSessionVoice(EXTENSION_VOICE_SESSION_ID, bytes);
+    setStatus("Custom voice uploaded. New reads will use it.", "ok");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function clearExtensionVoice() {
+  const provider = await getProvider();
+  if (!provider) {
+    setStatus("Pair the local service first.", "error");
+    return;
+  }
+  try {
+    await provider.clearSessionVoice(EXTENSION_VOICE_SESSION_ID);
+    setStatus("Using server default voice (env sample or built-in).", "ok");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+function bindVoiceInput(input) {
+  input?.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    input.value = "";
+    await uploadVoiceFile(file);
+  });
+}
+
 async function refreshStatus() {
   const pairing = await store.get();
   if (!pairing) {
@@ -48,8 +93,15 @@ async function refreshStatus() {
 
   try {
     await checkHealth(pairing.endpoint);
+    const provider = await getProvider();
+    const voiceStatus = await provider.getVoiceStatus();
+    const voiceHint = voiceStatus.extension_voice
+      ? " Custom extension voice active."
+      : voiceStatus.default_mode === "env"
+        ? " Server env voice active."
+        : " Built-in voice active.";
     if (!sessionState?.readerSession) {
-      setStatus(sessionState?.popupState?.message || "Connected. Local service is ready.", "ok");
+      setStatus((sessionState?.popupState?.message || "Connected. Local service is ready.") + voiceHint, "ok");
     }
   } catch {
     setStatus(
@@ -108,6 +160,11 @@ document.getElementById("stop").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "stop-read" });
   await refreshStatus();
 });
+
+bindVoiceInput(document.getElementById("voice-file"));
+bindVoiceInput(document.getElementById("voice-file-paired"));
+document.getElementById("clear-voice").addEventListener("click", clearExtensionVoice);
+document.getElementById("clear-voice-paired").addEventListener("click", clearExtensionVoice);
 
 refreshStatus();
 setInterval(refreshStatus, 2000);

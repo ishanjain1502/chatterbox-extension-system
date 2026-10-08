@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { LocalProvider } from "../local-provider.js";
+import { EXTENSION_VOICE_SESSION_ID, LocalProvider } from "../local-provider.js";
 
 function fakeFetchWav(durationMs = 800) {
   const state = { lastHeaders: {} };
@@ -57,6 +57,17 @@ test("sends the pairing token and returns WAV bytes", async () => {
 
   assert.equal(fetch.lastHeaders["X-Talking-Page-Token"], "a".repeat(32));
   assert.equal(result.durationMs, 800);
+});
+
+test("uploads extension voice samples", async () => {
+  const fetchFn = async (url, options = {}) => {
+    assert.equal(options.method, "PUT");
+    assert.match(url, /extension-default\/voice$/);
+    assert.equal(options.headers["Content-Type"], "audio/wav");
+    return { ok: true, status: 204 };
+  };
+  const provider = new LocalProvider({ endpoint: "http://127.0.0.1:8765", token: "a".repeat(32) }, fetchFn);
+  await provider.uploadSessionVoice(EXTENSION_VOICE_SESSION_ID, new Uint8Array([1, 2, 3]));
 });
 
 test("returns cached audio bytes", async () => {

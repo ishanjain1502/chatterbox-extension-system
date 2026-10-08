@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv
+server/.venv
+__pycache__
+**/__pycache__
+*.pyc
+.superpowers
+docs
+extension
+testVoices
+test-output.wav
+*.md
+.env
+.env.*
