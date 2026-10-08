@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sys
 import re
 import struct
 import hmac
@@ -10,12 +11,60 @@ import time
 import wave
 from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 EXTENSION_VOICE_SESSION_ID = "extension-default"
 MAX_VOICE_UPLOAD_BYTES = 10 * 1024 * 1024
 MIN_VOICE_SECONDS = 5.0
+
+
+def _ensure_project_root_on_path():
+    """Allow `python server/talking_page_server.py` to import the `server` package."""
+    root = Path(__file__).resolve().parent.parent
+    root_str = str(root)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+
+
+def load_project_env():
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.is_file():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+def _parse_tagger_enabled():
+    raw = os.environ.get("TALKING_PAGE_TAGGER_ENABLED", "1").strip().lower()
+    return raw not in ("0", "false")
+
+
+def _parse_tag_confidence_threshold():
+    raw = os.environ.get("TALKING_PAGE_TAG_CONFIDENCE_THRESHOLD", "0.65").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError("TALKING_PAGE_TAG_CONFIDENCE_THRESHOLD must be a number between 0 and 1")
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("TALKING_PAGE_TAG_CONFIDENCE_THRESHOLD must be between 0 and 1")
+    return value
+
+
+def _default_tagger_model_path():
+    return str(Path(__file__).resolve().parent / "models" / "paralinguistic_tagger.pt")
 
 
 @dataclass(frozen=True)
@@ -24,6 +73,9 @@ class Settings:
     port: int
     token: str
     voice_sample_path: str | None
+    tagger_enabled: bool = True
+    tag_confidence_threshold: float = 0.65
+    tagger_model_path: str = field(default_factory=_default_tagger_model_path)
 
     @classmethod
     def from_environment(cls):
@@ -33,8 +85,11 @@ class Settings:
         voice_raw = os.environ.get("TALKING_PAGE_VOICE_SAMPLE", "").strip()
         if len(token) < 32:
             raise ValueError("TALKING_PAGE_TOKEN must contain at least 32 characters")
-        if host not in {"127.0.0.1", "localhost"}:
-            raise ValueError("TALKING_PAGE_HOST must be loopback-only")
+        allowed_hosts = {"127.0.0.1", "localhost", "0.0.0.0"}
+        if host not in allowed_hosts:
+            raise ValueError(
+                "TALKING_PAGE_HOST must be 127.0.0.1, localhost, or 0.0.0.0 (Docker bind)"
+            )
         if not 1024 <= port <= 65535:
             raise ValueError("TALKING_PAGE_PORT must be between 1024 and 65535")
         voice_sample_path = None
@@ -42,7 +97,22 @@ class Settings:
             voice_sample_path = str(Path(voice_raw).expanduser().resolve())
             if not Path(voice_sample_path).is_file():
                 raise ValueError(f"TALKING_PAGE_VOICE_SAMPLE not found: {voice_sample_path}")
-        return cls("127.0.0.1", port, token, voice_sample_path)
+        bind_host = "127.0.0.1" if host == "localhost" else host
+        tagger_path_raw = os.environ.get("TALKING_PAGE_TAGGER_MODEL_PATH", "").strip()
+        tagger_model_path = (
+            str(Path(tagger_path_raw).expanduser().resolve())
+            if tagger_path_raw
+            else _default_tagger_model_path()
+        )
+        return cls(
+            bind_host,
+            port,
+            token,
+            voice_sample_path,
+            _parse_tagger_enabled(),
+            _parse_tag_confidence_threshold(),
+            tagger_model_path,
+        )
 
 
 @dataclass(frozen=True)
@@ -267,11 +337,20 @@ class NanoEngine:
 
 
 class Service:
-    def __init__(self, settings, engine, voice_store=None):
+    def __init__(self, settings, engine, voice_store=None, tagger=None):
         self.settings = settings
         self.engine = engine
         self.voice_store = voice_store or VoiceStore(settings.voice_sample_path)
         self.cache = SessionCache()
+        if tagger is None:
+            from server.paralinguistic.tagger import ParalinguisticTagger
+
+            tagger = ParalinguisticTagger(
+                settings.tagger_model_path,
+                settings.tag_confidence_threshold,
+                enabled=settings.tagger_enabled,
+            )
+        self.tagger = tagger
 
     def _authorize(self, token):
         if not hmac.compare_digest(self.settings.token, token or ""):
@@ -281,7 +360,11 @@ class Service:
         self._authorize(token)
         validate_total_word_count(text)
         fingerprint, source = self.voice_store.resolve(session_id)
-        generated = self.engine.synthesize(prepare_text(text), fingerprint, source)
+        normalized = prepare_text(text)
+        for_synth = self.tagger.annotate(normalized)
+        validate_chunk(for_synth)
+        print(f"for_synth: {for_synth}")
+        generated = self.engine.synthesize(for_synth, fingerprint, source)
         self.cache.put(
             session_id,
             chunk_index,
@@ -442,6 +525,8 @@ def make_handler(service):
 
 
 def run():
+    _ensure_project_root_on_path()
+    load_project_env()
     settings = Settings.from_environment()
     voice_store = VoiceStore(settings.voice_sample_path)
     if settings.voice_sample_path:

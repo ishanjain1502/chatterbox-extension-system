@@ -1,0 +1,29 @@
+services:
+  talking-page:
+    build: .
+    env_file:
+      - .env
+    ports:
+      # Host loopback only — same URL the Chrome extension uses (127.0.0.1:8765).
+      - "127.0.0.1:${TALKING_PAGE_PORT:-8765}:8765"
+    environment:
+      TALKING_PAGE_HOST: 0.0.0.0
+      TALKING_PAGE_PORT: "8765"
+    volumes:
+      - talking-page-hf-cache:/root/.cache/huggingface
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15m
+
+volumes:
+  talking-page-hf-cache:
